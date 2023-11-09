@@ -60,7 +60,7 @@ class ControlNetUnit:
         image: Optional[InputImage]=None,
         resize_mode: Union[ResizeMode, int, str] = ResizeMode.INNER_FIT,
         low_vram: bool=False,
-        processor_res: int=-1,
+        processor_res: int=512,
         threshold_a: float=-1,
         threshold_b: float=-1,
         guidance_start: float=0.0,
@@ -89,6 +89,7 @@ class ControlNetUnit:
             return False
 
         return vars(self) == vars(other)
+
 
 def find_cn_script(script_runner: scripts.ScriptRunner) -> Optional[scripts.Script]:
     """

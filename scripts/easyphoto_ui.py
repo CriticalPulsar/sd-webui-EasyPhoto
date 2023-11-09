@@ -7,15 +7,13 @@ import requests
 import numpy as np
 from PIL import Image
 from modules import script_callbacks, shared
-import modules
+
 from scripts.easyphoto_config import (cache_log_file_path, models_path,
-                                      user_id_outpath_samples,easyphoto_outpath_samples)
+                                      user_id_outpath_samples)
 from scripts.easyphoto_infer import easyphoto_infer_forward
 from scripts.easyphoto_train import easyphoto_train_forward
+from scripts.easyphoto_ipa import easyphoto_ipadapter_forward
 from scripts.easyphoto_utils import check_id_valid
-from modules import ui_common
-from modules.ui_components import ToolButton as ToolButton_webui
-import modules.generation_parameters_copypaste as parameters_copypaste
 
 gradio_compat = True
 
@@ -27,9 +25,6 @@ try:
         gradio_compat = False
 except ImportError:
     pass
-
-# def create_output_panel(tabname, outdir):
-#     return ui_common.create_output_panel(tabname, outdir)
 
 def get_external_ckpts():
     external_checkpoints = []
@@ -79,9 +74,7 @@ class ToolButton(gr.Button, gr.components.FormComponent):
 
     def get_block_name(self):
         return "button"
-
-
-
+    
 def on_ui_tabs():
     with gr.Blocks(analytics_enabled=False) as easyphoto_tabs:
         with gr.TabItem('Train'):
@@ -111,8 +104,8 @@ def on_ui_tabs():
                         gr.Markdown(
                             '''
                             Training steps:
-                            1. Please upload a main image (clean image with only the main target), and 5-20 training images (image contain the main target).
-                            2. Click on the Start Training button below to start the training process, approximately 10 minutes on A10*1.
+                            1. Please upload 5-20 half-body photos or head-and-shoulder photos, and please don't make the proportion of your face too small.
+                            2. Click on the Start Training button below to start the training process, approximately 25 minutes.
                             3. Switch to Inference and generate photos based on the template. 
                             4. If you encounter lag when uploading, please modify the size of the uploaded pictures and try to limit it to 1.5MB.
                             '''
@@ -196,16 +189,6 @@ def on_ui_tabs():
                                     interactive=True
                                 )
                             with gr.Row():
-                                refine_mask = gr.Checkbox(
-                                    label="Refine Mask",  
-                                    value=True
-                                )
-                                use_mask = gr.Checkbox(
-                                    label="Use Mask", 
-                                    value=True
-                                )
-
-                            with gr.Row():
                                 validation = gr.Checkbox(
                                     label="Validation",  
                                     value=False,
@@ -280,8 +263,8 @@ def on_ui_tabs():
                                     sd_model_checkpoint, dummy_component,
                                     uuid,
                                     resolution, val_and_checkpointing_steps, max_train_steps, steps_per_photos, train_batch_size, gradient_accumulation_steps, dataloader_num_workers, \
-                                    learning_rate, rank, network_alpha, validation, main_image, instance_images, \
-                                    enable_rl, max_rl_time, timestep_fraction,refine_mask,use_mask
+                                    learning_rate, rank, network_alpha, validation, main_image, instance_images,
+                                    enable_rl, max_rl_time, timestep_fraction
                                 ],
                                 outputs=[output_message])
                                 
@@ -364,17 +347,6 @@ def on_ui_tabs():
                                     outputs=[uuids[i]]
                                 )
 
-                        with gr.Row():
-                            match_and_paste = gr.Checkbox(
-                                label="Match and Paste",  
-                                value=True
-                            )
-                            
-                            remove_target = gr.Checkbox(
-                                label="Remove Target",  
-                                value=False
-                            )
-
                         with gr.Accordion("Advanced Options", open=False):
                             additional_prompt = gr.Textbox(
                                 label="Additional Prompt",
@@ -411,10 +383,6 @@ def on_ui_tabs():
                                     minimum=-90, maximum=90, value=0.0,
                                     step=1, label='Angle'
                                 )
-                                azimuth  = gr.Slider(
-                                    minimum=-60, maximum=60, value=0.0,
-                                    step=1, label='Azimuth'
-                                )
                                 ratio = gr.Slider(
                                     minimum=0.5, maximum=5.5, value=1.0,
                                     step=0.1, label='Ratio'
@@ -440,13 +408,9 @@ def on_ui_tabs():
                                     label="Refine Boundary",  
                                     value=True
                                 )
-                                pure_image = gr.Checkbox(
-                                    label="Pure Image",  
-                                    value=True
-                                )
                                 global_inpaint = gr.Checkbox(
                                     label="Global Inpaint", 
-                                    value=False
+                                    value=True
                                 )
 
                                 # change_shape = gr.Checkbox(
@@ -466,27 +430,59 @@ def on_ui_tabs():
 
                     with gr.Column():
                         gr.Markdown('Generated Results')
-      
+
                         output_images = gr.Gallery(
                             label='Output',
                             show_label=False
                         ).style(columns=[4], rows=[2], object_fit="contain", height="auto")
 
-                        with gr.Row():
-                            tabname = 'easyphoto'
-                            buttons = {
-                                'img2img': ToolButton_webui('🖼️', elem_id=f'{tabname}_send_to_img2img', tooltip="Send image and generation parameters to img2img tab."),
-                                'inpaint': ToolButton_webui('🎨️', elem_id=f'{tabname}_send_to_inpaint', tooltip="Send image and generation parameters to img2img inpaint tab."),
-                                'extras': ToolButton_webui('📐', elem_id=f'{tabname}_send_to_extras', tooltip="Send image and generation parameters to extras tab.")
-                            }
+                        infer_progress = gr.Textbox(
+                            label="Generation Progress",
+                            value="No task currently",
+                            interactive=False
+                        )
+                    
+                display_button.click(
+                    fn=easyphoto_infer_forward,
+                    inputs=[sd_model_checkpoint, init_image, additional_prompt, seed, first_diffusion_steps, first_denoising_strength, \
+                            lora_weight, iou_threshold, angle, ratio, batch_size, refine_input_mask, optimize_angle_and_ratio, refine_bound, \
+                            global_inpaint, model_selected_tab, *uuids],
+                            
+                    outputs=[infer_progress, output_images]
+                )
 
-                        for paste_tabname, paste_button in buttons.items():
-                            parameters_copypaste.register_paste_params_button(parameters_copypaste.ParamBinding(
-                                paste_button=paste_button, tabname=paste_tabname, source_tabname="txt2img" if tabname == "txt2img" else None, source_image_component=output_images,
-                                paste_field_names=[]
-                            ))
+        with gr.TabItem('IPAdapter'):
+            dummy_component = gr.Label(visible=False)
+            with gr.Blocks():
+                with gr.Row():
+                    with gr.Column():
+                        with gr.Column():
+                            gr.Markdown('Main Image')
+                            main_image = gr.Image(label="Main Image", elem_id="{id_part}_image", show_label=False, source="upload", type="filepath")
+                        with gr.Column():
+                            init_image = gr.Image(label="Image for skybox", elem_id="{id_part}_image", show_label=False, source="upload", tool='sketch')
+                    
+                    with gr.Column():
+                        gr.Markdown('Generated Results')
 
+                        output_images = gr.Gallery(
+                            label='Output',
+                            show_label=False
+                        ).style(columns=[4], rows=[2], object_fit="contain", height="auto")
 
+                       
+                with gr.Row():
+                    with gr.Column():
+                        input_prompt = gr.Textbox(
+                            label="Input Prompt",
+                            lines=3,
+                            value='',
+                            interactive=True
+                        )
+
+                        display_button = gr.Button('Start Generation')
+
+                    with gr.Column():
                         infer_progress = gr.Textbox(
                             label="Generation Progress",
                             value="No task currently",
@@ -494,16 +490,11 @@ def on_ui_tabs():
                         )
 
 
-            
                 display_button.click(
-                    fn=easyphoto_infer_forward,
-                    inputs=[sd_model_checkpoint, init_image, additional_prompt, seed, first_diffusion_steps, first_denoising_strength, \
-                            lora_weight, iou_threshold, angle, azimuth, ratio, batch_size, refine_input_mask, optimize_angle_and_ratio, refine_bound, \
-                            pure_image, global_inpaint, match_and_paste, remove_target, model_selected_tab, *uuids],
-                            
+                    fn=easyphoto_ipadapter_forward,
+                    inputs=[sd_model_checkpoint, main_image, init_image, input_prompt],           
                     outputs=[infer_progress, output_images]
                 )
-            
     return [(easyphoto_tabs, "EasyPhoto", f"EasyPhoto_tabs")]
 
 # 注册设置页的配置项

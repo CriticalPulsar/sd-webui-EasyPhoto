@@ -122,15 +122,8 @@ def resize_and_stretch(
     if isinstance(img, np.ndarray):
         img = Image.fromarray(img)
 
-    # Calculate the aspect ratio
-    width, height = img.size
-    aspect_ratio = width / height
-
-    # Calculate the new size while preserving the aspect ratio
-    new_width = int(min(target_size[0], target_size[1] * aspect_ratio))
-    new_height = int(min(target_size[1], target_size[0] / aspect_ratio))
-
-    img = img.resize((new_width, new_height))
+    # Crop and resize
+    img.thumbnail(target_size)
 
     if is_mask:
         resized_img = Image.new(
@@ -158,6 +151,7 @@ def merge_images(
     mask2: np.ndarray,
     x: float,
     y: float,
+    color: Tuple[int, int, int]
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
     """
     Paste img1 onto img2 with a specified center point (x, y), filter the result by mask1 and mask2, and calculate IoU.
@@ -169,6 +163,7 @@ def merge_images(
         mask2 (np.ndarray): The mask corresponding to img2.
         x (float): The x-coordinate of the center point for pasting.
         y (float): The y-coordinate of the center point for pasting.
+        color (Tuple[int, int, int]): The color to fill empty regions.
 
     Returns:
         Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
@@ -200,8 +195,6 @@ def merge_images(
     expand_mask1 = paste_image_center(mask1, expand_mask1)
     expand_mask2 = paste_image_center(mask2, expand_mask2)
 
-    cv2.imwrite('expand_mask1.jpg',expand_mask1)
-    cv2.imwrite('expand_mask2.jpg',expand_mask2)
     # Calculate IoU between the expanded masks
     iou = calculate_mask_iou(expand_mask1, expand_mask2)
 
@@ -215,11 +208,11 @@ def merge_images(
     result_img[merge_mask == 0] = expand_img2[merge_mask == 0]
 
     # Determine areas that were expanded with img2 and fill them with the specified color
-    # expand_region_mask = copy.deepcopy(expand_mask2)
-    # expand_region_mask[merge_mask == 255] = 0
+    expand_region_mask = copy.deepcopy(expand_mask2)
+    expand_region_mask[merge_mask == 255] = 0
 
-    # white_area = np.where(expand_region_mask > 128)
-    # result_img[white_area] = color
+    white_area = np.where(expand_region_mask > 128)
+    result_img[white_area] = color
 
     return result_img, expand_img1, expand_img2, expand_mask1, expand_mask2, iou
 
@@ -291,6 +284,7 @@ def crop_and_paste(
     x: float,
     y: float,
     ratio: float,
+    color: Tuple[int, int, int]
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
     """
     Crop and paste one image onto another image while considering rotation, resizing, and color fill.
@@ -304,6 +298,7 @@ def crop_and_paste(
         x (float): The x-coordinate of the center point for transformation.
         y (float): The y-coordinate of the center point for transformation.
         ratio (float): The scaling ratio for img1.
+        color (Tuple[int, int, int]): The color to fill empty regions.
 
     Returns:
         Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
@@ -320,7 +315,7 @@ def crop_and_paste(
 
     # Paste img1 onto img2, considering masks
     result_img, img1, img2, mask1, mask2, iou = merge_images(
-        img1, img2, mask1, mask2, x, y)
+        img1, img2, mask1, mask2, x, y, color)
 
     return result_img, img1, img2, mask1, mask2, iou
 
@@ -397,6 +392,7 @@ def align_and_overlay_images(
     angle: float = 0.0,
     ratio: float = 1.0,
     box2: Optional[Tuple[int, int, int, int]] = None,
+    color: Tuple[int, int, int] = (0, 0, 0)
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
     """
     Paste img1 to img2 with angle, ratio and mask, while considering optional transformations.
@@ -409,6 +405,7 @@ def align_and_overlay_images(
         angle (float, optional): The rotation angle for img1 (default is 0.0).
         ratio (float, optional): The scaling ratio for img1 (default is 1.0).
         box2 (Optional[Tuple[int, int, int, int]]): The bounding box for ROI in img2 (left, upper, right, lower) (default is None).
+        color (Tuple[int, int, int], optional): The color to fill empty regions (default is black).
 
     Returns:
         Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
@@ -449,7 +446,7 @@ def align_and_overlay_images(
 
     # rotate & expand img1, and paste to the center of img2
     final_res, final_img1, final_img2, final_mask1, final_mask2, iou = crop_and_paste(
-        resized_img1, resized_mask1, img2, mask2, angle, x, y, ratio
+        resized_img1, resized_mask1, img2, mask2, angle, x, y, ratio, color
     )
 
     print(f'Merge img1, img2! Mask IoU: {iou}')
@@ -750,34 +747,25 @@ def seg_by_box(
     return mask_image
 
 
-def apply_mask_to_image(img_foreground: np.ndarray, img_background: np.ndarray, mask: np.ndarray, mask_blur: int = 5, expand_kernal=5) -> np.ndarray:
+def apply_mask_to_image(img: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """
     Apply a mask to an image to keep pixels where the mask is 255 and set other areas to white.
 
     Args:
-        img_foreground (np.ndarray): The foreground image.
-        img_background (np.ndarray): The background image.
-        mask (np.ndarray): mask wthite use foreground, the other use background
-        mask_blur (int): kernal size of mask_blur
+        img (np.ndarray): The input image.
+        mask (np.ndarray): The mask image, where pixels with a value of 255 will be retained, and other areas will be set to white.
 
     Returns:
         np.ndarray: The processed image with the specified pixels retained and other areas set to white.
     """
-    # # Create a white background
-    # white_background = np.full_like(img, 255, dtype=np.uint8)
+    # Create a white background
+    white_background = np.full_like(img, 255, dtype=np.uint8)
 
-    # # Use the mask to retain pixels in the image where the mask is 255
-    # result = cv2.bitwise_and(img, img, mask=mask)
+    # Use the mask to retain pixels in the image where the mask is 255
+    result = cv2.bitwise_and(img, img, mask=mask)
 
-    # # Set areas not retained by the mask to white
-    # result[np.where(mask == 0)] = [255, 255, 255]
-    mask = cv2.dilate(np.array(mask), np.ones(
-            (expand_kernal, expand_kernal), np.uint8), iterations=1)
-    mask_blur = cv2.GaussianBlur(
-        np.array(np.uint8(mask)), (mask_blur, mask_blur), 0
-    )
-    mask_blur = np.stack((mask_blur,) * 3, axis=-1)
-    result = np.array(img_foreground, np.uint8)*(mask_blur/255.) + np.array(img_background, np.uint8)*((255-mask_blur)/255.)
+    # Set areas not retained by the mask to white
+    result[np.where(mask == 0)] = [255, 255, 255]
 
     return result
 
@@ -942,16 +930,17 @@ def copy_white_mask_to_template(img: np.ndarray, mask: np.ndarray, template: np.
         np.ndarray: The resulting image with the masked region copied to the template.
     """
     h, w, _ = template.shape
-    # expand_mask = np.zeros((h, w))
+    expand_mask = np.zeros((h, w))
 
     # Expand the mask to match the specified bounding box
-    # expand_mask[box[1]:box[3], box[0]:box[2]] = mask
+    expand_mask[box[1]:box[3], box[0]:box[2]] = mask
 
     # result = np.zeros_like(template)
     result = template
+    mask = np.stack((mask,) * 3, axis=-1)
+
     template_crop = template[box[1]:box[3], box[0]:box[2]]
-    # result[box[1]:box[3], box[0]:box[2]] = np.array(img, np.uint8)*(mask/255.) + np.array(template_crop, np.uint8)*((255-mask)/255.)
-    result[box[1]:box[3], box[0]:box[2]] = apply_mask_to_image(img, template_crop, mask)
+    result[box[1]:box[3], box[0]:box[2]] = np.array(img, np.uint8)*(mask/255.) + np.array(template_crop, np.uint8)*((255-mask)/255.)
 
     # Copy the region from the template to the result where the mask is 0
     # result[expand_mask == 0] = template[expand_mask == 0]
@@ -963,20 +952,6 @@ def wrap_image_by_vertex(img, polygon1, polygon2):
     # TODO traditional way to translate img of polygon1 to polygon2
     return img
 
-
-def compute_color_similarity(color1, color2):
-    r1, g1, b1 = color1
-    r2, g2, b2 = color2
-    distance = ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
-    return distance
-
-
-def get_no_white(colors, threshold=10):
-    for color in colors:
-        dis = compute_color_similarity(color,[255,255,255])
-        if dis>threshold:
-            return color
-    return colors[0]
 
 def get_background_color(img: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """
@@ -997,19 +972,9 @@ def get_background_color(img: np.ndarray, mask: np.ndarray) -> np.ndarray:
     unique_values, counts = np.unique(
         img_mask_area, axis=0, return_counts=True)
 
-    # print(np.array(counts).max(), np.array(counts).sum())
-    # print(np.array(counts).max()/ np.array(counts).sum())
     # Find the most frequent pixel value
-    # most_frequent_index = np.argmax(counts)
-    # most_frequent_value = unique_values[most_frequent_index]
-
-    sorted_indices = np.argsort(-counts)
-    sorted_colors = unique_values[sorted_indices]
-    # sorted_counts = counts[sorted_indices]
-
-    TopK = min(len(sorted_colors), 10)
-    sorted_colors = sorted_colors[:TopK]
-    most_frequent_value = get_no_white(sorted_colors)
+    most_frequent_index = np.argmax(counts)
+    most_frequent_value = unique_values[most_frequent_index]
 
     return most_frequent_value
 
@@ -1065,14 +1030,13 @@ def find_best_angle_ratio(
 
     # Define the optimization target function
     def target_function(parameters: Tuple[float, float]) -> float:
-        iou, in_iou = align_and_compute_iou(
+        return -align_and_compute_iou(
             polygon1, polygon2, x, y, parameters
-        )
-        return - iou - 0.01* in_iou + 0.1 * angle_loss(angle_target, parameters)
+        ) + 0.1 * angle_loss(angle_target, parameters)
 
     # Define the constraint function
     def constraint_function(parameters: Tuple[float, float]) -> float:
-        iou,_ = align_and_compute_iou(polygon1, polygon2, x, y, parameters)
+        iou = align_and_compute_iou(polygon1, polygon2, x, y, parameters)
         return iou - iou_threshold
 
     # Define the angle loss function
@@ -1115,21 +1079,11 @@ def find_best_angle_ratio(
         poly2 = Polygon(polygon2)
 
         # Calculate IoU
-        try:
-            iou = poly1.intersection(poly2).area / poly1.union(poly2).area
-            in_iou = poly1.intersection(poly2).area / poly2.area
-        except:
-            if not poly1.is_valid:
-                poly1 = poly1.buffer(0)
-            if not poly2.is_valid:
-                poly2 = poly2.buffer(0)
+        iou = poly1.intersection(poly2).area / poly1.union(poly2).area
 
-            iou = poly1.intersection(poly2).area / poly1.union(poly2).area
-            in_iou = poly1.intersection(poly2).area / poly2.area
+        print(f'iou: {iou}, angle:{angle}, ratio:{ratio}')
 
-        print(f'iou: {iou}, in_iou: {in_iou}, angle:{angle}, ratio:{ratio}')
-
-        return iou, in_iou
+        return iou
 
     # Define the constraint
     constraint = {"type": "ineq", "fun": constraint_function}
@@ -1176,12 +1130,3 @@ def expand_box_by_pad(box, max_size, padding_size):
         min(max_size[1], box[3] + padding_size),
     ]
     return expanded_box
-
-
-def resize_to_512(image): 
-    short_side  = min(image.shape[0], image.shape[1])
-    resize      = float(short_side / 512.0)
-    new_size    = (int(image.shape[1] // resize // 32 * 32), int(image.shape[0] // resize // 32 * 32))
-    result_img  = cv2.resize(image, new_size, interpolation=cv2.INTER_LANCZOS4)
-
-    return result_img
